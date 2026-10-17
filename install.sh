@@ -1,12 +1,18 @@
 #!/bin/sh
 # Install, update or uninstall the rnfs NomadNet gateway for this user, next to an rnfs that is already
-# installed. Run it from the gateway's source directory, as the user that runs the rnfs daemon (not root):
+# installed. Run it as the user that runs the rnfs daemon (not root), straight from GitHub:
+#
+#   curl -fsSL https://raw.githubusercontent.com/afit21/rnfs-nomadnet-gateway/main/install.sh | sh -s -- OPTIONS
+#
+# which installs the gateway's main branch, or as `sh install.sh OPTIONS` from a source checkout, which installs
+# that checkout. OPTIONS, for example:
 #
 #   sh install.sh --name "My rnfs gateway" --access whitelist --allow <identity hash> [--allow <hash> ...]
 #   sh install.sh --name "My rnfs gateway" --access whitelist --allow-later
 #   sh install.sh --name "My rnfs gateway" --access open
 #   sh install.sh --allow <hash>  allow someone more, once installed (any setting above can be changed so)
-#   sh install.sh --update        re-install the code, keep the settings, restart the gateway
+#   sh install.sh --update        re-install the code (the newest main branch, from GitHub), keep the settings,
+#                                 restart the gateway
 #   sh install.sh --uninstall     remove the code and the service (keeps ~/.rnfs-nomadnet-gateway)
 #
 # Required for the first install (later, only what you change):
@@ -32,8 +38,9 @@
 # touched. Needs Python 3.11+ with venv and pip, and internet access to fetch rnfs's client library (the rnfs
 # release's wheel, its hash checked) from GitHub and Reticulum (rns) from PyPI.
 #
-# Environment: GATEWAY_SOURCE  what to install instead of this script's directory: a source directory, a
-#                              .zip/.tar.gz/.whl path or URL, or another pip requirement
+# Environment: GATEWAY_SOURCE  what to install instead (default: this script's checkout, else the main branch
+#                              from GitHub): a source directory, a .zip/.tar.gz/.whl path or URL, or another pip
+#                              requirement
 set -eu
 
 NAME=""
@@ -45,13 +52,15 @@ SERVICE=yes
 PYTHON=""
 FORCE=no
 ACTION=""  # install, update or uninstall
+REPO=afit21/rnfs-nomadnet-gateway
+REPO_ARCHIVE=https://github.com/$REPO/archive/refs/heads/main.tar.gz  # what installs when not run from a checkout
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'gateway installer: warning: %s\n' "$*" >&2; }
 die() { printf 'gateway installer: %s\n' "$*" >&2; exit 1; }
 usage() {
     if [ -f "$0" ]; then sed -n '2,/^set -eu$/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
-    else say "See install.sh in the rnfs-nomadnet-gateway source"; fi
+    else say "Options: https://github.com/$REPO#install (or download install.sh and run sh install.sh --help)"; fi
 }
 
 need_value() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value (try --help)"; }
@@ -86,8 +95,15 @@ ALLOW=${ALLOW#,}
 case "${HOME:-}" in /*) ;; *) die "HOME isn't set to an absolute path" ;; esac
 abs_dir() { (CDPATH='' cd -P -- "$1" && pwd -P); }
 SOURCE=${GATEWAY_SOURCE:-}
-if [ -z "$SOURCE" ] && [ -f "$0" ]; then SOURCE=$(abs_dir "$(dirname -- "$0")"); fi
+if [ -z "$SOURCE" ] && [ -f "$0" ] && [ -f "$(dirname -- "$0")/pyproject.toml" ] &&
+        [ -d "$(dirname -- "$0")/rnfs_nomadnet_gateway" ]; then
+    SOURCE=$(abs_dir "$(dirname -- "$0")")  # run from a checkout: install it
+fi
+[ -n "$SOURCE" ] || SOURCE=$REPO_ARCHIVE  # e.g. piped from curl
 if [ -n "$SOURCE" ] && [ -d "$SOURCE" ]; then SOURCE=$(abs_dir "$SOURCE"); fi
+# How to run this installer again, in what it says
+if [ -d "$SOURCE" ] && [ -f "$SOURCE/install.sh" ]; then RUN="sh $SOURCE/install.sh"
+else RUN="curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh -s --"; fi
 if [ -n "$RNFS_DIR_GIVEN" ]; then
     case "$RNFS_DIR_GIVEN" in "~"|"~/"*) RNFS_DIR_GIVEN=$HOME${RNFS_DIR_GIVEN#\~} ;; esac
     [ -d "$RNFS_DIR_GIVEN" ] || die "--rnfs-dir $RNFS_DIR_GIVEN isn't a directory"
@@ -304,7 +320,6 @@ EOF
 # The code
 
 install_code() {
-    [ -n "$SOURCE" ] || die "nothing to install: run this script from the gateway's source directory, or set GATEWAY_SOURCE"
     if [ -d "$SOURCE" ]; then
         [ -f "$SOURCE/pyproject.toml" ] && [ -d "$SOURCE/rnfs_nomadnet_gateway" ] ||
             die "$SOURCE isn't the gateway's source directory"
@@ -333,8 +348,9 @@ install_code() {
             die "pip couldn't install rnfs $RNFS_VERSION from $RNFS_WHEEL (are GitHub and PyPI reachable?)"
     fi
     say "Installing the gateway from $SOURCE (and Reticulum from PyPI)"
+    # No cache: a branch's archive has the same URL whatever it holds, and --update wants the newest
     # shellcheck disable=SC2086
-    "$VENV/bin/python" -I -m pip $PIP_OPTS wheel --quiet --no-deps --wheel-dir "$work" "$build" ||
+    "$VENV/bin/python" -I -m pip $PIP_OPTS wheel --quiet --no-deps --no-cache-dir --wheel-dir "$work" "$build" ||
         die "couldn't build the gateway from $SOURCE"
     wheel=""
     for found in "$work"/rnfs_nomadnet_gateway-*.whl; do [ -f "$found" ] && wheel=$found; done
@@ -412,9 +428,9 @@ do_install() {
         fi
         if [ -n "$missing" ]; then
             die "missing:$missing. For example:
-  sh install.sh --name \"My rnfs gateway\" --access whitelist --allow <your identity hash>
-  sh install.sh --name \"My rnfs gateway\" --access open
-(sh install.sh --help for all options)"
+  $RUN --name \"My rnfs gateway\" --access whitelist --allow <your identity hash>
+  $RUN --name \"My rnfs gateway\" --access open
+(all options: https://github.com/$REPO#install)"
         fi
         for hash in $(printf '%s' "$ALLOW" | tr ',' ' '); do
             printf '%s' "$hash" | tr -d '<>' | grep -Eq '^[0-9a-fA-F]{32}$' ||
@@ -433,7 +449,7 @@ which they send you, and you run this again with --allow <hash>."
             warn "--allow only matters with --access whitelist; with open, anyone can use the gateway"
         fi
     elif ! [ -f "$GATEWAY_DIR/config.toml" ]; then
-        die "the gateway isn't set up here yet: install it first (sh install.sh --help)"
+        die "the gateway isn't set up here yet: install it first (https://github.com/$REPO#install)"
     fi
 
     find_python
@@ -454,7 +470,7 @@ which they send you, and you run this again with --allow <hash>."
     done
     if [ -z "$mine" ] && [ -n "$others" ]; then
         die "the rnfs daemon runs as $others, not as $(id -un). The gateway reads the daemon's API token, so it must
-be installed and run as that user: run this script as ${others%% *} (e.g. sudo -iu ${others%% *}, then sh $SOURCE/install.sh ...)"
+be installed and run as that user: run this script as ${others%% *} (e.g. sudo -iu ${others%% *}, then $RUN ...)"
     fi
     if [ -z "$mine" ] && [ -z "$rnfs_command" ] && [ -z "$RNFS_DIR_GIVEN" ]; then
         die "rnfs isn't installed here (no rnfs command, and no rnfs daemon running). Install and start it first:
@@ -549,7 +565,7 @@ or run $LAUNCHER yourself"
     say "The gateway's address: $address"
     say "Open it in NomadNet or MeshChat: $address:/page/index.mu"
     if grep -Eq '^access = "whitelist"' "$GATEWAY_DIR/config.toml" 2>/dev/null; then
-        say "Only allowed identities can use it. To allow someone: sh $SOURCE/install.sh --allow <hash>"
+        say "Only allowed identities can use it. To allow someone: $RUN --allow <hash>"
     fi
     case ":${PATH:-}:" in
         *":$BIN_DIR:"*) ;;
