@@ -1,0 +1,32 @@
+# systemd user unit for the rnfs NomadNet gateway.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/rnfs-nomadnet-gateway.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now rnfs-nomadnet-gateway
+#   journalctl --user -u rnfs-nomadnet-gateway -f          # logs
+#
+# Runs as the same user as the rnfs daemon (it reads the daemon's API token). ExecStart assumes
+# `pipx install` (which puts the command in ~/.local/bin); adjust the path otherwise.
+
+[Unit]
+Description=rnfs NomadNet gateway
+After=rnsd.service rnfs.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/rnfs-nomadnet-gateway"
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=default.target
